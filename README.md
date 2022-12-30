@@ -1,2 +1,2 @@
 # t5-pytorch
-t5 in pytorch
+A PyTorch implementation of t5.
