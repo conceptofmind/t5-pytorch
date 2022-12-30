@@ -141,7 +141,7 @@ class T5Attention(nn.Module):
 
         q = q * self.scale
 
-        dots = torch.einsum('bhid,bhjd->bhij', q, k)
+        dots = torch.einsum('b h i d, b h j d -> b h i j', q, k)
 
         if self.causal:
             i, j = dots.shape[-2:]
@@ -160,51 +160,70 @@ class T5Attention(nn.Module):
         attn = dots.softmax(dim = -1)
         attn = self.dropout(attn)
 
-        out = torch.einsum('bhij,bhjd->bhid', attn, v)
+        out = torch.einsum('b h i j, b h j d -> b h i d', attn, v)
         out = rearrange(out, 'b h n d -> b n (h d)')
         return self.to_out(out)
-        
-# T5 Decoder
 
-class T5Decoder(nn.Module):
+# T5 Cross Attention
+
+class T5CrossAttention(nn.Module):
     def __init__(
         self,
         *,
         dim,
-        num_tokens,
-        depth,
         heads = 8,
         dim_head = 64,
-        causal = True,
         num_buckets = 32,
         max_distance = 128,
-        mlp_mult = 4,
         dropout = 0.
     ):
         super().__init__()
-        self.num_tokens = num_tokens
-        self.token_emb = nn.Embedding(num_tokens, dim)
-        self.pos_emb = nn.Embedding(1024, dim)
+        inner_dim = dim_head * heads
+        self.heads = heads
+        self.scale = dim_head ** -0.5
+
+        self.to_q = nn.Linear(dim, inner_dim, bias = False)
+        self.to_k = nn.Linear(dim, inner_dim, bias = False)
+        self.to_v = nn.Linear(dim, inner_dim, bias = False)
+        self.to_out = nn.Linear(inner_dim, dim)
+
+        self.relative_position_bias = T5RelativePositionBias(
+            scale = dim_head ** -0.5, 
+            causal = False, 
+            num_buckets = num_buckets, 
+            max_distance = max_distance, 
+            heads = heads
+            )
+
         self.dropout = nn.Dropout(dropout)
 
-        self.layers = nn.ModuleList([])
-        for _ in range(depth):
-            self.layers.append(nn.ModuleList([
-                PreNorm(dim, T5Attention(dim = dim, heads = heads, dim_head = dim_head, causal = causal, num_buckets = num_buckets, max_distance = max_distance, dropout = dropout)),
-                PreNorm(dim, FeedForward(dim = dim, mult = mlp_mult, dropout = dropout)),
-            ]))
+    def forward(self, x, context, mask = None, context_mask = None):
+        b, n, _, h = *x.shape, self.heads
+        q, k, v = self.to_q(x), self.to_kv(context)
 
-    def forward(self, x, mask = None):
-        b, n, device = *x.shape, x.device
-        pos = torch.arange(n, device = device)
-        x = self.token_emb(x) + self.pos_emb(pos)
-        x = self.dropout(x)
+        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), (q, k, v))
 
-        for attn, mlp, in self.layers:
-            x = x + attn(x, mask = mask)
-            x = x + mlp(x)
+        q = q * self.scale
 
-        return x
+        dots = torch.einsum('b h i d, b h j d -> b h i j', q, k)
+
+        dots = self.relative_position_bias(dots)
+
+        if mask is not None:
+            mask_value = -torch.finfo(dots.dtype).max
+            dots = dots.masked_fill_(~mask, mask_value)
+
+        if context_mask is not None:
+            mask_value = -torch.finfo(dots.dtype).max
+            dots = dots.masked_fill_(~context_mask[:, None, :], mask_value)
+
+        attn = dots.softmax(dim = -1)
+        attn = self.dropout(attn)
+
+        out = torch.einsum('b h i j, b h j d -> b h i d', attn, v)
+        out = rearrange(out, 'b h n d -> b n (h d)')
+        return self.to_out(out)
+
 
 # T5 Encoder
 
@@ -248,6 +267,50 @@ class T5Encoder(nn.Module):
 
         return x
 
+# T5 Decoder
+
+class T5Decoder(nn.Module):
+    def __init__(
+        self,
+        *,
+        dim,
+        num_tokens,
+        depth,
+        heads = 8,
+        dim_head = 64,
+        causal = True,
+        num_buckets = 32,
+        max_distance = 128,
+        mlp_mult = 4,
+        dropout = 0.
+    ):
+        super().__init__()
+        self.num_tokens = num_tokens
+        self.token_emb = nn.Embedding(num_tokens, dim)
+        self.pos_emb = nn.Embedding(1024, dim)
+        self.dropout = nn.Dropout(dropout)
+
+        self.layers = nn.ModuleList([])
+        for _ in range(depth):
+            self.layers.append(nn.ModuleList([
+                PreNorm(dim, T5Attention(dim = dim, heads = heads, dim_head = dim_head, causal = causal, num_buckets = num_buckets, max_distance = max_distance, dropout = dropout)),
+                PreNorm(dim, T5CrossAttention(dim = dim, heads = heads, dim_head = dim_head, num_buckets = num_buckets, max_distance = max_distance, dropout = dropout)),
+                PreNorm(dim, FeedForward(dim = dim, mult = mlp_mult, dropout = dropout)),
+            ]))
+
+    def forward(self, x, context, mask = None, context_mask = None):
+        b, n, _, device = *x.shape, x.device
+        pos = torch.arange(n, device = device)
+        x = self.token_emb(x) + self.pos_emb(pos)
+        x = self.dropout(x)
+
+        for attn, cross_attn, mlp in self.layers:
+            x = x + attn(x, mask = mask)
+            x = x + cross_attn(x, context, mask = mask, context_mask = context_mask)
+            x = x + mlp(x)
+
+        return x
+
 # T5
 
 class T5(nn.Module):
@@ -268,31 +331,13 @@ class T5(nn.Module):
         dropout = 0.
     ):
         super().__init__()
-        
-        self.encoder = T5Encoder(
-            dim = dim, 
-            num_tokens = enc_num_tokens, 
-            depth = enc_depth, 
-            heads = enc_heads, 
-            dim_head = enc_dim_head, 
-            mlp_mult = enc_mlp_mult, 
-            dropout = dropout
-        )
-        
-        self.decoder = T5Decoder(
-            dim = dim, 
-            num_tokens = dec_num_tokens, 
-            depth = dec_depth, 
-            heads = dec_heads, 
-            dim_head = dec_dim_head, 
-            mlp_mult = dec_mlp_mult, 
-            dropout = dropout
-        )
+        self.encoder = T5Encoder(dim = dim, num_tokens = enc_num_tokens, depth = enc_depth, heads = enc_heads, dim_head = enc_dim_head, mlp_mult = enc_mlp_mult, dropout = dropout)
+        self.decoder = T5Decoder(dim = dim, num_tokens = dec_num_tokens, depth = dec_depth, heads = dec_heads, dim_head = dec_dim_head, mlp_mult = dec_mlp_mult, dropout = dropout)
 
-    def forward(self, src, tgt, mask = None):
+    def forward(self, src, tgt, mask = None, context_mask = None):
         x = self.encoder(src, mask = mask)
-        x = self.decoder(tgt, mask = mask)
-        return x
+        y = self.decoder(x, tgt, mask = mask, context_mask = context_mask)
+        return y
 
 
 if __name__ == '__main__':
