@@ -7,11 +7,21 @@ import math
 from einops import rearrange
 
 # pre-normalization wrapper
+# they use layernorm without bias
+
+class T5LayerNorm(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.gamma = nn.Parameter(torch.ones(dim))
+        self.register_buffer("beta", torch.zeros(dim))
+
+    def forward(self, x):
+        return F.layer_norm(x, x.shape[-1:], self.gamma, self.beta)
 
 class PreNorm(nn.Module):
     def __init__(self, dim, fn):
         super().__init__()
-        self.norm = nn.LayerNorm(dim)
+        self.norm = T5LayerNorm(dim)
         self.fn = fn
 
     def forward(self, x, **kwargs):
