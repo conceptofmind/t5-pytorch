@@ -199,7 +199,7 @@ class T5CrossAttention(nn.Module):
 
     def forward(self, x, context, mask = None, context_mask = None):
         b, n, _, h = *x.shape, self.heads
-        q, k, v = self.to_q(x), self.to_kv(context)
+        q, k, v = self.to_q(x), self.to_k(context), self.to_v(context)
 
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), (q, k, v))
 
@@ -256,9 +256,9 @@ class T5Encoder(nn.Module):
             ]))
 
     def forward(self, x, mask = None):
-        b, n, device = *x.shape, x.device
-        pos = torch.arange(n, device = device)
-        x = self.token_emb(x) + self.pos_emb(pos)
+        pos = torch.arange(x.shape[1], device = x.device)
+        x = self.token_emb(x) 
+        x = x + self.pos_emb(pos)
         x = self.dropout(x)
 
         for attn, mlp in self.layers:
@@ -299,9 +299,9 @@ class T5Decoder(nn.Module):
             ]))
 
     def forward(self, x, context, mask = None, context_mask = None):
-        b, n, _, device = *x.shape, x.device
-        pos = torch.arange(n, device = device)
-        x = self.token_emb(x) + self.pos_emb(pos)
+        pos = torch.arange(x.shape[1], device = x.device)
+        x = self.token_emb(x) 
+        x = x + self.pos_emb(pos)
         x = self.dropout(x)
 
         for attn, cross_attn, mlp in self.layers:
@@ -334,9 +334,9 @@ class T5(nn.Module):
         self.encoder = T5Encoder(dim = dim, num_tokens = enc_num_tokens, depth = enc_depth, heads = enc_heads, dim_head = enc_dim_head, mlp_mult = enc_mlp_mult, dropout = dropout)
         self.decoder = T5Decoder(dim = dim, num_tokens = dec_num_tokens, depth = dec_depth, heads = dec_heads, dim_head = dec_dim_head, mlp_mult = dec_mlp_mult, dropout = dropout)
 
-    def forward(self, src, tgt, mask = None, context_mask = None):
-        x = self.encoder(src, mask = mask)
-        y = self.decoder(x, tgt, mask = mask, context_mask = context_mask)
+    def forward(self, x, y, mask = None, context_mask = None):
+        x = self.encoder(x, mask = mask)
+        y = self.decoder(x, y, mask = mask, context_mask = context_mask)
         return y
 
 
