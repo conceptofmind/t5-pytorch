@@ -6,6 +6,22 @@ import math
 
 from einops import rearrange
 
+def exists(val):
+    return val is not None
+
+def default(val, d):
+    return val if exists(val) else d
+
+# residual wrapper
+
+class Residual(nn.Module):
+    def __init__(self, fn):
+        super().__init__()
+        self.fn = fn
+
+    def forward(self, x, **kwargs):
+        return self.fn(x, **kwargs) + x
+
 # pre-normalization wrapper
 # they use layernorm without bias
 
@@ -27,13 +43,6 @@ class PreNorm(nn.Module):
     def forward(self, x, **kwargs):
         return self.fn(self.norm(x), **kwargs)
 
-# gated-GELU activation function
-
-class GEGLU(nn.Module):
-    def forward(self, x):
-        x, gates = x.chunk(2, dim = -1)
-        return x * F.gelu(gates)
-
 # feedforward layer with gated-GELU activation function
 
 class FeedForward(nn.Module):
@@ -41,8 +50,8 @@ class FeedForward(nn.Module):
         super().__init__()
         inner_dim = int(dim * mult)
         self.net = nn.Sequential(
-            nn.Linear(dim, inner_dim * 2),
-            GEGLU(),
+            nn.Linear(dim, inner_dim),
+            nn.ReLU(),
             nn.Dropout(dropout), # optional dropout
             nn.Linear(inner_dim, dim)
         )
@@ -108,8 +117,6 @@ class T5Attention(nn.Module):
         heads = 8,
         dim_head = 64,
         causal = False,
-        num_buckets = 32,
-        max_distance = 128,
         dropout = 0.
     ):
         super().__init__()
@@ -125,9 +132,7 @@ class T5Attention(nn.Module):
 
         self.relative_position_bias = T5RelativePositionBias(
             scale = dim_head ** -0.5, 
-            causal = causal, 
-            num_buckets = num_buckets, 
-            max_distance = max_distance, 
+            causal = causal,
             heads = heads
             )
 
@@ -141,27 +146,37 @@ class T5Attention(nn.Module):
 
         q = q * self.scale
 
-        dots = torch.einsum('b h i d, b h j d -> b h i j', q, k)
+        sim = torch.einsum('b h i d, b h j d -> b h i j', q, k)
+
+        sim = self.relative_position_bias(sim)
+
+        # mask
+
+        mask_value = -torch.finfo(sim.dtype).max
+
+        if mask is not None:
+            sim = sim.masked_fill_(~mask, mask_value)
 
         if self.causal:
-            i, j = dots.shape[-2:]
-
-        dots = self.relative_position_bias(dots)
-
-        if mask is not None and self.causal:
-            # Causal Mask
+            i, j = sim.shape[-2:]
             causal_mask = torch.ones((i, j), dtype = torch.bool, device = x.device).triu(j - i + 1)
-            dots = dots.masked_fill(causal_mask, -torch.finfo(dots.dtype).max)
+            sim = sim.masked_fill(causal_mask, mask_value)
 
-        elif mask is not None:
-            mask_value = -torch.finfo(dots.dtype).max
-            dots = dots.masked_fill_(~mask, mask_value)
+        # attention
 
-        attn = dots.softmax(dim = -1)
+        attn = sim.softmax(dim = -1)
         attn = self.dropout(attn)
 
+        # aggregate
+
         out = torch.einsum('b h i j, b h j d -> b h i d', attn, v)
+        
+        # merge heads
+
         out = rearrange(out, 'b h n d -> b n (h d)')
+        
+        # combine heads and linear output
+
         return self.to_out(out)
 
 # T5 Cross Attention
@@ -171,27 +186,26 @@ class T5CrossAttention(nn.Module):
         self,
         *,
         dim,
+        context_dim = None,
         heads = 8,
         dim_head = 64,
-        num_buckets = 32,
-        max_distance = 128,
         dropout = 0.
     ):
         super().__init__()
         inner_dim = dim_head * heads
+        context_dim = default(context_dim, dim)
+
         self.heads = heads
         self.scale = dim_head ** -0.5
 
         self.to_q = nn.Linear(dim, inner_dim, bias = False)
-        self.to_k = nn.Linear(dim, inner_dim, bias = False)
-        self.to_v = nn.Linear(dim, inner_dim, bias = False)
+        self.to_k = nn.Linear(context_dim, inner_dim, bias = False)
+        self.to_v = nn.Linear(context_dim, inner_dim, bias = False)
         self.to_out = nn.Linear(inner_dim, dim)
 
         self.relative_position_bias = T5RelativePositionBias(
-            scale = dim_head ** -0.5, 
-            causal = False, 
-            num_buckets = num_buckets, 
-            max_distance = max_distance, 
+            scale = dim_head ** -0.5,
+            causal = False,
             heads = heads
             )
 
@@ -199,31 +213,45 @@ class T5CrossAttention(nn.Module):
 
     def forward(self, x, context, mask = None, context_mask = None):
         b, n, _, h = *x.shape, self.heads
-        q, k, v = self.to_q(x), self.to_k(context), self.to_v(context)
+
+        kv_input = default(context, x)
+
+        q, k, v = self.to_q(x), self.to_k(kv_input), self.to_v(kv_input)
 
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), (q, k, v))
 
         q = q * self.scale
 
-        dots = torch.einsum('b h i d, b h j d -> b h i j', q, k)
+        sim = torch.einsum('b h i d, b h j d -> b h i j', q, k)
 
-        dots = self.relative_position_bias(dots)
+        sim = self.relative_position_bias(sim)
+
+        # mask
+
+        mask_value = -torch.finfo(sim.dtype).max
 
         if mask is not None:
-            mask_value = -torch.finfo(dots.dtype).max
-            dots = dots.masked_fill_(~mask, mask_value)
+            sim = sim.masked_fill_(~mask, mask_value)
 
         if context_mask is not None:
-            mask_value = -torch.finfo(dots.dtype).max
-            dots = dots.masked_fill_(~context_mask[:, None, :], mask_value)
+            sim = sim.masked_fill_(~context_mask[:, None, :], mask_value)
 
-        attn = dots.softmax(dim = -1)
+        # attention
+
+        attn = sim.softmax(dim = -1)
         attn = self.dropout(attn)
 
-        out = torch.einsum('b h i j, b h j d -> b h i d', attn, v)
-        out = rearrange(out, 'b h n d -> b n (h d)')
-        return self.to_out(out)
+        # aggregate
 
+        out = torch.einsum('b h i j, b h j d -> b h i d', attn, v)
+        
+        # merge heads
+
+        out = rearrange(out, 'b h n d -> b n (h d)')
+        
+        # combine heads and linear output
+
+        return self.to_out(out)
 
 # T5 Encoder
 
@@ -237,33 +265,32 @@ class T5Encoder(nn.Module):
         heads = 8,
         dim_head = 64,
         causal = False,
-        num_buckets = 32,
-        max_distance = 128,
         mlp_mult = 4,
         dropout = 0.
     ):
         super().__init__()
         self.num_tokens = num_tokens
         self.token_emb = nn.Embedding(num_tokens, dim)
-        self.pos_emb = nn.Embedding(1024, dim)
-        self.dropout = nn.Dropout(dropout)
 
         self.layers = nn.ModuleList([])
         for _ in range(depth):
             self.layers.append(nn.ModuleList([
-                PreNorm(dim, T5Attention(dim = dim, heads = heads, dim_head = dim_head, causal = causal, num_buckets = num_buckets, max_distance = max_distance, dropout = dropout)),
-                PreNorm(dim, FeedForward(dim = dim, mult = mlp_mult, dropout = dropout)),
+                Residual(PreNorm(dim, T5Attention(dim = dim, heads = heads, dim_head = dim_head, causal = causal, dropout = dropout))),
+                Residual(PreNorm(dim, FeedForward(dim = dim, mult = mlp_mult, dropout = dropout))),
             ]))
 
+        self.final_norm = T5LayerNorm(dim)
+
+        self.project_out = nn.Linear(dim, num_tokens)
+
     def forward(self, x, mask = None):
-        pos = torch.arange(x.shape[1], device = x.device)
-        x = self.token_emb(x) 
-        x = x + self.pos_emb(pos)
-        x = self.dropout(x)
+        x = self.token_emb(x)
 
         for attn, mlp in self.layers:
-            x = x + attn(x, mask = mask)
-            x = x + mlp(x)
+            x = attn(x, mask = mask)
+            x = mlp(x)
+
+        x = self.final_norm(x)
 
         return x
 
@@ -279,37 +306,35 @@ class T5Decoder(nn.Module):
         heads = 8,
         dim_head = 64,
         causal = True,
-        num_buckets = 32,
-        max_distance = 128,
         mlp_mult = 4,
         dropout = 0.
     ):
         super().__init__()
         self.num_tokens = num_tokens
         self.token_emb = nn.Embedding(num_tokens, dim)
-        self.pos_emb = nn.Embedding(1024, dim)
-        self.dropout = nn.Dropout(dropout)
 
         self.layers = nn.ModuleList([])
         for _ in range(depth):
             self.layers.append(nn.ModuleList([
-                PreNorm(dim, T5Attention(dim = dim, heads = heads, dim_head = dim_head, causal = causal, num_buckets = num_buckets, max_distance = max_distance, dropout = dropout)),
-                PreNorm(dim, T5CrossAttention(dim = dim, heads = heads, dim_head = dim_head, num_buckets = num_buckets, max_distance = max_distance, dropout = dropout)),
-                PreNorm(dim, FeedForward(dim = dim, mult = mlp_mult, dropout = dropout)),
+                Residual(PreNorm(dim, T5Attention(dim = dim, heads = heads, dim_head = dim_head, causal = causal, dropout = dropout))),
+                Residual(PreNorm(dim, T5CrossAttention(dim = dim, heads = heads, dim_head = dim_head, dropout = dropout))),
+                Residual(PreNorm(dim, FeedForward(dim = dim, mult = mlp_mult, dropout = dropout))),
             ]))
 
+        self.final_norm = T5LayerNorm(dim)
+
+        self.project_out = nn.Linear(dim, num_tokens)
+
     def forward(self, x, context, mask = None, context_mask = None):
-        pos = torch.arange(x.shape[1], device = x.device)
-        x = self.token_emb(x) 
-        x = x + self.pos_emb(pos)
-        x = self.dropout(x)
-
+        x = self.token_emb(x)
         for attn, cross_attn, mlp in self.layers:
-            x = x + attn(x, mask = mask)
-            x = x + cross_attn(x, context, mask = mask, context_mask = context_mask)
-            x = x + mlp(x)
+            x = attn(x, mask = mask)
+            x = cross_attn(x, context = context, mask = mask, context_mask = context_mask)
+            x = mlp(x)
 
-        return x
+        x = self.final_norm(x)
+
+        return self.project_out(x)
 
 # T5
 
@@ -331,13 +356,30 @@ class T5(nn.Module):
         dropout = 0.
     ):
         super().__init__()
-        self.encoder = T5Encoder(dim = dim, num_tokens = enc_num_tokens, depth = enc_depth, heads = enc_heads, dim_head = enc_dim_head, mlp_mult = enc_mlp_mult, dropout = dropout)
-        self.decoder = T5Decoder(dim = dim, num_tokens = dec_num_tokens, depth = dec_depth, heads = dec_heads, dim_head = dec_dim_head, mlp_mult = dec_mlp_mult, dropout = dropout)
+        
+        self.encoder = T5Encoder(
+            dim = dim, 
+            num_tokens = enc_num_tokens, 
+            depth = enc_depth, 
+            heads = enc_heads, 
+            dim_head = enc_dim_head, 
+            mlp_mult = enc_mlp_mult, 
+            dropout = dropout
+        )
+        
+        self.decoder = T5Decoder(dim = dim, 
+            num_tokens = dec_num_tokens, 
+            depth = dec_depth, 
+            heads = dec_heads, 
+            dim_head = dec_dim_head, 
+            mlp_mult = dec_mlp_mult, 
+            dropout = dropout
+        )
 
-    def forward(self, x, y, mask = None, context_mask = None):
-        x = self.encoder(x, mask = mask)
-        y = self.decoder(x, y, mask = mask, context_mask = context_mask)
-        return y
+    def forward(self, src, tgt, mask = None, context_mask = None):
+        x = self.encoder(src, mask = mask)
+        x = self.decoder(tgt, x, mask = mask, context_mask = context_mask)
+        return x
 
 
 if __name__ == '__main__':
