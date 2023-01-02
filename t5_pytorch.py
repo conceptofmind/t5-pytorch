@@ -281,8 +281,6 @@ class T5Encoder(nn.Module):
 
         self.final_norm = T5LayerNorm(dim)
 
-        self.project_out = nn.Linear(dim, num_tokens)
-
     def forward(self, x, mask = None):
         x = self.token_emb(x)
 
@@ -323,8 +321,6 @@ class T5Decoder(nn.Module):
 
         self.final_norm = T5LayerNorm(dim)
 
-        self.project_out = nn.Linear(dim, num_tokens)
-
     def forward(self, x, context, mask = None, context_mask = None):
         x = self.token_emb(x)
         for attn, cross_attn, mlp in self.layers:
@@ -334,7 +330,7 @@ class T5Decoder(nn.Module):
 
         x = self.final_norm(x)
 
-        return self.project_out(x)
+        return x
 
 # T5
 
