@@ -269,7 +269,6 @@ class T5Encoder(nn.Module):
         dropout = 0.
     ):
         super().__init__()
-        self.num_tokens = num_tokens
         self.token_emb = nn.Embedding(num_tokens, dim)
 
         self.layers = nn.ModuleList([])
@@ -308,7 +307,6 @@ class T5Decoder(nn.Module):
         dropout = 0.
     ):
         super().__init__()
-        self.num_tokens = num_tokens
         self.token_emb = nn.Embedding(num_tokens, dim)
 
         self.layers = nn.ModuleList([])
