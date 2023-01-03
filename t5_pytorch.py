@@ -62,7 +62,7 @@ class FeedForward(nn.Module):
 # T5 relative positional bias
 
 class T5RelativePositionBias(nn.Module):
-    def __init__(self, scale, causal = False, num_buckets = 32, max_distance = 128, heads = 8):
+    def __init__(self, scale, causal = False, num_buckets = 32, max_distance = 128, heads = 12):
         super().__init__()
         self.scale = scale
         self.causal = causal
@@ -107,14 +107,14 @@ class T5RelativePositionBias(nn.Module):
         bias = rearrange(values, 'i j h -> h i j')
         return qk_dots + (bias * self.scale)
 
-# T5 attention
+# T5 Self Attention
 
-class T5Attention(nn.Module):
+class T5SelfAttention(nn.Module):
     def __init__(
         self,
         *,
         dim,
-        heads = 8,
+        heads = 12,
         dim_head = 64,
         causal = False,
         dropout = 0.
@@ -187,7 +187,7 @@ class T5CrossAttention(nn.Module):
         *,
         dim,
         context_dim = None,
-        heads = 8,
+        heads = 12,
         dim_head = 64,
         dropout = 0.
     ):
@@ -262,7 +262,7 @@ class T5Encoder(nn.Module):
         dim,
         num_tokens,
         depth,
-        heads = 8,
+        heads = 12,
         dim_head = 64,
         causal = False,
         mlp_mult = 4,
@@ -270,11 +270,12 @@ class T5Encoder(nn.Module):
     ):
         super().__init__()
         self.token_emb = nn.Embedding(num_tokens, dim)
+        #self.pos_emb = 
 
         self.layer = nn.ModuleList([])
         for _ in range(depth):
             self.layer.append(nn.ModuleList([
-                Residual(PreNorm(dim, T5Attention(dim = dim, heads = heads, dim_head = dim_head, causal = causal, dropout = dropout))),
+                Residual(PreNorm(dim, T5SelfAttention(dim = dim, heads = heads, dim_head = dim_head, causal = causal, dropout = dropout))),
                 Residual(PreNorm(dim, FeedForward(dim = dim, mult = mlp_mult, dropout = dropout))),
             ]))
 
@@ -300,7 +301,7 @@ class T5Decoder(nn.Module):
         dim,
         num_tokens,
         depth,
-        heads = 8,
+        heads = 12,
         dim_head = 64,
         causal = True,
         mlp_mult = 4,
@@ -312,7 +313,7 @@ class T5Decoder(nn.Module):
         self.layer = nn.ModuleList([])
         for _ in range(depth):
             self.layer.append(nn.ModuleList([
-                Residual(PreNorm(dim, T5Attention(dim = dim, heads = heads, dim_head = dim_head, causal = causal, dropout = dropout))),
+                Residual(PreNorm(dim, T5SelfAttention(dim = dim, heads = heads, dim_head = dim_head, causal = causal, dropout = dropout))),
                 Residual(PreNorm(dim, T5CrossAttention(dim = dim, heads = heads, dim_head = dim_head, dropout = dropout))),
                 Residual(PreNorm(dim, FeedForward(dim = dim, mult = mlp_mult, dropout = dropout))),
             ]))
@@ -347,11 +348,12 @@ class T5(nn.Module):
         dec_heads,
         dec_dim_head,
         dec_mlp_mult,
-        dropout = 0.
+        dropout = 0.,
+        tie_token_emb = True
     ):
         super().__init__()
         
-        self.shared_embedding = nn.Embedding(enc_num_tokens, dim)
+        self.embedding = nn.Embedding(enc_num_tokens, dim)
 
         self.encoder = T5Encoder(
             dim = dim, 
@@ -375,8 +377,12 @@ class T5(nn.Module):
 
         self.to_logits = nn.Linear(dim, dec_num_tokens)
 
+        # tie weights
+        if tie_token_emb:
+            self.encoder.token_emb.weight = self.decoder.token_emb.weight
+
     def forward(self, src, tgt, mask = None, context_mask = None):
-        x = self.shared_embedding(src)
+        x = self.embedding(src)
         x = self.encoder(src, mask = mask)
         x = self.decoder(tgt, x, mask = mask, context_mask = context_mask)
         x = self.to_logits(x)
@@ -391,20 +397,21 @@ if __name__ == '__main__':
         dim = 768,
         enc_num_tokens = 512,
         enc_depth = 6,
-        enc_heads = 8,
+        enc_heads = 12,
         enc_dim_head = 64,
         enc_mlp_mult = 4,
         dec_num_tokens = 512,
         dec_depth = 6,
-        dec_heads = 8,
+        dec_heads = 12,
         dec_dim_head = 64,
         dec_mlp_mult = 4,
-        dropout = 0.
+        dropout = 0.,
+        tie_token_emb = True
     )
 
-    src = torch.randint(0, 256, (1, 1024))
+    src = torch.randint(0, 512, (1, 1024))
     src_mask = torch.ones_like(src).bool()
-    tgt = torch.randint(0, 256, (1, 1024))
+    tgt = torch.randint(0, 512, (1, 1024))
 
     loss = model(src, tgt, mask = src_mask)
 
