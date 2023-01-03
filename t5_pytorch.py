@@ -401,8 +401,6 @@ class T5(nn.Module):
 
 
 if __name__ == '__main__':
-
-    from opendelta import Visualization
     
     model = T5(
         dim = 768,
@@ -426,7 +424,5 @@ if __name__ == '__main__':
     tgt = torch.randint(0, 512, (1, 1024))
 
     loss = model(src, tgt, mask = src_mask)
-
-    Visualization(model).structure_graph()
 
     print(loss.shape) #torch.Size([1, 1024, 512])
