@@ -43,7 +43,7 @@ class PreNorm(nn.Module):
     def forward(self, x, **kwargs):
         return self.fn(self.norm(x), **kwargs)
 
-# feedforward layer with gated-GELU activation function
+# feedforward layer
 
 class FeedForward(nn.Module):
     def __init__(self, dim, mult = 4, dropout = 0.):
@@ -271,9 +271,9 @@ class T5Encoder(nn.Module):
         super().__init__()
         self.token_emb = nn.Embedding(num_tokens, dim)
 
-        self.layers = nn.ModuleList([])
+        self.layer = nn.ModuleList([])
         for _ in range(depth):
-            self.layers.append(nn.ModuleList([
+            self.layer.append(nn.ModuleList([
                 Residual(PreNorm(dim, T5Attention(dim = dim, heads = heads, dim_head = dim_head, causal = causal, dropout = dropout))),
                 Residual(PreNorm(dim, FeedForward(dim = dim, mult = mlp_mult, dropout = dropout))),
             ]))
@@ -283,7 +283,7 @@ class T5Encoder(nn.Module):
     def forward(self, x, mask = None):
         x = self.token_emb(x)
 
-        for attn, mlp in self.layers:
+        for attn, mlp in self.layer:
             x = attn(x, mask = mask)
             x = mlp(x)
 
@@ -309,9 +309,9 @@ class T5Decoder(nn.Module):
         super().__init__()
         self.token_emb = nn.Embedding(num_tokens, dim)
 
-        self.layers = nn.ModuleList([])
+        self.layer = nn.ModuleList([])
         for _ in range(depth):
-            self.layers.append(nn.ModuleList([
+            self.layer.append(nn.ModuleList([
                 Residual(PreNorm(dim, T5Attention(dim = dim, heads = heads, dim_head = dim_head, causal = causal, dropout = dropout))),
                 Residual(PreNorm(dim, T5CrossAttention(dim = dim, heads = heads, dim_head = dim_head, dropout = dropout))),
                 Residual(PreNorm(dim, FeedForward(dim = dim, mult = mlp_mult, dropout = dropout))),
@@ -321,7 +321,7 @@ class T5Decoder(nn.Module):
 
     def forward(self, x, context, mask = None, context_mask = None):
         x = self.token_emb(x)
-        for attn, cross_attn, mlp in self.layers:
+        for attn, cross_attn, mlp in self.layer:
             x = attn(x, mask = mask)
             x = cross_attn(x, context = context, mask = mask, context_mask = context_mask)
             x = mlp(x)
@@ -351,6 +351,8 @@ class T5(nn.Module):
     ):
         super().__init__()
         
+        self.shared_embedding = nn.Embedding(enc_num_tokens, dim)
+
         self.encoder = T5Encoder(
             dim = dim, 
             num_tokens = enc_num_tokens, 
@@ -361,7 +363,8 @@ class T5(nn.Module):
             dropout = dropout
         )
         
-        self.decoder = T5Decoder(dim = dim, 
+        self.decoder = T5Decoder(
+            dim = dim, 
             num_tokens = dec_num_tokens, 
             depth = dec_depth, 
             heads = dec_heads, 
@@ -370,22 +373,28 @@ class T5(nn.Module):
             dropout = dropout
         )
 
+        self.to_logits = nn.Linear(dim, dec_num_tokens)
+
     def forward(self, src, tgt, mask = None, context_mask = None):
+        x = self.shared_embedding(src)
         x = self.encoder(src, mask = mask)
         x = self.decoder(tgt, x, mask = mask, context_mask = context_mask)
+        x = self.to_logits(x)
         return x
 
 
 if __name__ == '__main__':
+
+    from opendelta import Visualization
     
     model = T5(
-        dim = 512,
-        enc_num_tokens = 256,
+        dim = 768,
+        enc_num_tokens = 512,
         enc_depth = 6,
         enc_heads = 8,
         enc_dim_head = 64,
         enc_mlp_mult = 4,
-        dec_num_tokens = 256,
+        dec_num_tokens = 512,
         dec_depth = 6,
         dec_heads = 8,
         dec_dim_head = 64,
@@ -398,4 +407,7 @@ if __name__ == '__main__':
     tgt = torch.randint(0, 256, (1, 1024))
 
     loss = model(src, tgt, mask = src_mask)
+
+    Visualization(model).structure_graph()
+
     print(loss.shape) #torch.Size([1, 1024, 512])
