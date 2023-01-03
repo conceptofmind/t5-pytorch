@@ -203,11 +203,11 @@ class T5CrossAttention(nn.Module):
         self.to_v = nn.Linear(context_dim, inner_dim, bias = False)
         self.to_out = nn.Linear(inner_dim, dim)
 
-        self.relative_position_bias = T5RelativePositionBias(
-            scale = dim_head ** -0.5,
-            causal = False,
-            heads = heads
-            )
+        # self.relative_position_bias = T5RelativePositionBias(
+        #     scale = dim_head ** -0.5,
+        #     causal = False,
+        #     heads = heads
+        #     )
 
         self.dropout = nn.Dropout(dropout)
 
@@ -224,7 +224,7 @@ class T5CrossAttention(nn.Module):
 
         sim = torch.einsum('b h i d, b h j d -> b h i j', q, k)
 
-        sim = self.relative_position_bias(sim)
+        #sim = self.relative_position_bias(sim)
 
         # mask
 
