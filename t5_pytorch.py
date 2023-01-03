@@ -261,6 +261,7 @@ class T5Encoder(nn.Module):
         *,
         dim,
         num_tokens,
+        #max_seq_len,
         depth,
         heads = 12,
         dim_head = 64,
@@ -270,7 +271,7 @@ class T5Encoder(nn.Module):
     ):
         super().__init__()
         self.token_emb = nn.Embedding(num_tokens, dim)
-        #self.pos_emb = 
+        #self.pos_emb = nn.Embedding(max_seq_len, dim)
 
         self.layer = nn.ModuleList([])
         for _ in range(depth):
@@ -283,6 +284,7 @@ class T5Encoder(nn.Module):
 
     def forward(self, x, mask = None):
         x = self.token_emb(x)
+        #x = x + self.pos_emb(torch.arange(x.shape[1], device = x.device))
 
         for attn, mlp in self.layer:
             x = attn(x, mask = mask)
@@ -300,6 +302,7 @@ class T5Decoder(nn.Module):
         *,
         dim,
         num_tokens,
+        #max_seq_len,
         depth,
         heads = 12,
         dim_head = 64,
@@ -309,6 +312,7 @@ class T5Decoder(nn.Module):
     ):
         super().__init__()
         self.token_emb = nn.Embedding(num_tokens, dim)
+        #self.pos_emb = nn.Embedding(max_seq_len, dim)
 
         self.layer = nn.ModuleList([])
         for _ in range(depth):
@@ -322,6 +326,8 @@ class T5Decoder(nn.Module):
 
     def forward(self, x, context, mask = None, context_mask = None):
         x = self.token_emb(x)
+        #x = x + self.pos_emb(torch.arange(x.shape[1], device = x.device))
+
         for attn, cross_attn, mlp in self.layer:
             x = attn(x, mask = mask)
             x = cross_attn(x, context = context, mask = mask, context_mask = context_mask)
@@ -338,6 +344,7 @@ class T5(nn.Module):
         self,
         *,
         dim,
+        #max_seq_len,
         enc_num_tokens,
         enc_depth,
         enc_heads,
@@ -354,9 +361,11 @@ class T5(nn.Module):
         super().__init__()
         
         self.embedding = nn.Embedding(enc_num_tokens, dim)
+        #self.pos_emb = nn.Embedding(max_seq_len, dim)
 
         self.encoder = T5Encoder(
-            dim = dim, 
+            dim = dim,
+            #max_seq_len = max_seq_len, 
             num_tokens = enc_num_tokens, 
             depth = enc_depth, 
             heads = enc_heads, 
@@ -366,7 +375,8 @@ class T5(nn.Module):
         )
         
         self.decoder = T5Decoder(
-            dim = dim, 
+            dim = dim,
+            #max_seq_len= max_seq_len, 
             num_tokens = dec_num_tokens, 
             depth = dec_depth, 
             heads = dec_heads, 
@@ -383,6 +393,7 @@ class T5(nn.Module):
 
     def forward(self, src, tgt, mask = None, context_mask = None):
         x = self.embedding(src)
+        #x = x + self.pos_emb(torch.arange(x.shape[1], device = x.device))
         x = self.encoder(src, mask = mask)
         x = self.decoder(tgt, x, mask = mask, context_mask = context_mask)
         x = self.to_logits(x)
@@ -395,6 +406,7 @@ if __name__ == '__main__':
     
     model = T5(
         dim = 768,
+        #max_seq_len = 1024,
         enc_num_tokens = 512,
         enc_depth = 6,
         enc_heads = 12,
