@@ -400,29 +400,29 @@ class T5(nn.Module):
         return x
 
 
-# if __name__ == '__main__':
+if __name__ == '__main__':
     
-#     model = T5(
-#         dim = 768,
-#         #max_seq_len = 1024,
-#         enc_num_tokens = 512,
-#         enc_depth = 6,
-#         enc_heads = 12,
-#         enc_dim_head = 64,
-#         enc_mlp_mult = 4,
-#         dec_num_tokens = 512,
-#         dec_depth = 6,
-#         dec_heads = 12,
-#         dec_dim_head = 64,
-#         dec_mlp_mult = 4,
-#         dropout = 0.,
-#         tie_token_emb = True
-#     )
+    model = T5(
+        dim = 768,
+        #max_seq_len = 1024,
+        enc_num_tokens = 512,
+        enc_depth = 6,
+        enc_heads = 12,
+        enc_dim_head = 64,
+        enc_mlp_mult = 4,
+        dec_num_tokens = 512,
+        dec_depth = 6,
+        dec_heads = 12,
+        dec_dim_head = 64,
+        dec_mlp_mult = 4,
+        dropout = 0.,
+        tie_token_emb = True
+    )
 
-#     src = torch.randint(0, 512, (1, 1024))
-#     src_mask = torch.ones_like(src).bool()
-#     tgt = torch.randint(0, 512, (1, 1024))
+    src = torch.randint(0, 512, (1, 1024))
+    src_mask = torch.ones_like(src).bool()
+    tgt = torch.randint(0, 512, (1, 1024))
 
-#     loss = model(src, tgt, mask = src_mask)
+    loss = model(src, tgt, mask = src_mask)
 
-#     print(loss.shape) #torch.Size([1, 1024, 512])
+    print(loss.shape) #torch.Size([1, 1024, 512])
