@@ -9,6 +9,7 @@ Phil Wang (lucidrains) advised and provided review for this implementation. [Ple
 
 ```python
 import torch
+from t5_pytorch import T5
 
 model = T5(
     dim = 768,
