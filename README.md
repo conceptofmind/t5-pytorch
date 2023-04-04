@@ -1,7 +1,7 @@
 ## T5 - PyTorch (WIP)
 A PyTorch implementation of [Exploring the Limits of Transfer Learning with a Unified Text-to-Text Transformer](https://arxiv.org/abs/1910.10683). You can find the official T5x repository by Google [here](https://github.com/google-research/t5x).
 
-There is a small bug with dimensionality which needs to be resolved.
+### There is a small bug with dimensionality which needs to be resolved if someone wants to open a PR. I will not be able to personally get to this until later.
 
 ## Acknowledgement
 
