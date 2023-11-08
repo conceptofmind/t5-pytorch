@@ -146,16 +146,16 @@ class T5SelfAttention(nn.Module):
 
         q = q * self.scale
 
-        sim = torch.einsum('b h i d, b h j d -> b h i j', q, k)
+        sim = torch.einsum('b h i d, b h j d -> b h i j', q, k) # (b, h, n, n)
 
         sim = self.relative_position_bias(sim)
 
-        # mask
+        # mask (b, n)
 
         mask_value = -torch.finfo(sim.dtype).max
 
         if mask is not None:
-            sim = sim.masked_fill_(~mask, mask_value)
+            sim = sim.masked_fill_(~mask[:, None, :, None], mask_value)
 
         if self.causal:
             i, j = sim.shape[-2:]
@@ -222,19 +222,19 @@ class T5CrossAttention(nn.Module):
 
         q = q * self.scale
 
-        sim = torch.einsum('b h i d, b h j d -> b h i j', q, k)
+        sim = torch.einsum('b h i d, b h j d -> b h i j', q, k) # (b, h, n, n)
 
         #sim = self.relative_position_bias(sim)
 
-        # mask
+        # mask (b, n)
 
         mask_value = -torch.finfo(sim.dtype).max
 
         if mask is not None:
-            sim = sim.masked_fill_(~mask, mask_value)
+            sim = sim.masked_fill_(~mask[:, None, :, None], mask_value)
 
         if context_mask is not None:
-            sim = sim.masked_fill_(~context_mask[:, None, :], mask_value)
+            sim = sim.masked_fill_(~context_mask[:, None, None, :], mask_value)
 
         # attention
 
@@ -360,7 +360,6 @@ class T5(nn.Module):
     ):
         super().__init__()
         
-        self.embedding = nn.Embedding(enc_num_tokens, dim)
         #self.pos_emb = nn.Embedding(max_seq_len, dim)
 
         self.encoder = T5Encoder(
@@ -392,10 +391,9 @@ class T5(nn.Module):
             self.encoder.token_emb.weight = self.decoder.token_emb.weight
 
     def forward(self, src, tgt, mask = None, context_mask = None):
-        x = self.embedding(src)
         #x = x + self.pos_emb(torch.arange(x.shape[1], device = x.device))
         x = self.encoder(src, mask = mask)
-        x = self.decoder(tgt, x, mask = mask, context_mask = context_mask)
+        x = self.decoder(tgt, x, mask = context_mask, context_mask = mask)
         x = self.to_logits(x)
         return x
 
